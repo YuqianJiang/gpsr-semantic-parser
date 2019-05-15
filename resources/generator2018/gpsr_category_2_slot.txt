@@ -54,7 +54,7 @@ Tell me the (name | gender | pose) of the person at the {beacon} = {get_info} O 
 Tell me the (name | gender | pose) of the person in the {room} = {get_info} O TO[B-OPERATOR] O (B-INFO | B-INFO | B-INFO) O O FROM[B-PERSON] O O FROM[{room}]
 
 #$fndppl   = Tell me how many people in the {room} are ($pgenderp | $pose)
-Tell me how many people in the {room} are ($pgenderp | $pose) = {count} O TO[B-OPERATOR] O O FROM[B-PERSON] O O FROM[{room}] O ($pgenderp | $pose)
+Tell me how many people in the {room} are ($pgenderp | $pose) = {count} O TO[B-OPERATOR] O O FROM[B-PERSON] O O FROM[{room}] O (FROM[$pgenderp] | FROM[$pose])
 
 ##############################################################################
 #

@@ -36,6 +36,7 @@
 #$whowhere = the {gesture} person in the {room}
 the {gesture} person in the {room} = O {gesture} B-PERSON O O {room}
 
+{gesture} = GESTURE
 
 ##############################################################################
 #
