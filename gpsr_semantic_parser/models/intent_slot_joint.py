@@ -24,8 +24,8 @@ from gpsr_semantic_parser.generator import Generator
 from gpsr_semantic_parser.models.metrics import IntentSlotAccuracy, TokenSequenceAccuracy, ParseValidity
 
 
-@Model.register("seq2seq_slot")
-class Seq2Seq(Model):
+@Model.register("intent_slot_joint")
+class IntentSlotJoint(Model):
     """
     This ``SimpleSeq2Seq`` class is a :class:`Model` which takes a sequence, encodes it, and then
     uses the encoded representations to decode another sequence.  You can use this as the basis for
@@ -80,12 +80,14 @@ class Seq2Seq(Model):
                  attention: Attention = None,
                  attention_function: SimilarityFunction = None,
                  beam_size: int = None,
+                 intent_namespace: str = "intent_tokens", 
                  target_namespace: str = "tokens",
                  target_embedding_dim: int = None,
                  scheduled_sampling_ratio: float = 0.,
                  use_bleu: bool = True,
                  emb_dropout: float = 0.5) -> None:
-        super(Seq2Seq, self).__init__(vocab)
+        super(IntentSlotJoint, self).__init__(vocab)
+        self._intent_namespace = intent_namespace
         self._target_namespace = target_namespace
         self._scheduled_sampling_ratio = scheduled_sampling_ratio
 
@@ -114,6 +116,7 @@ class Seq2Seq(Model):
         # Encodes the sequence of source embeddings into a sequence of hidden states.
         self._encoder = encoder
 
+        intent_size = self.vocab.get_vocab_size(self._intent_namespace)
         num_classes = self.vocab.get_vocab_size(self._target_namespace)
 
         # Attention mechanism applied to the encoder output for each step.
@@ -153,6 +156,7 @@ class Seq2Seq(Model):
         # We project the hidden state from the decoder into the output vocabulary space
         # in order to get log probabilities of each target token, at each time step.
         self._output_projection_layer = Linear(self._decoder_output_dim, num_classes)
+        self._intent_out = Linear(self._decoder_output_dim, intent_size)
 
     def take_step(self,
                   last_predictions: torch.Tensor,
@@ -196,6 +200,7 @@ class Seq2Seq(Model):
     def forward(self,  # type: ignore
                 source_tokens: Dict[str, torch.LongTensor],
                 metadata: List[Dict[str, Any]],
+                intent_tokens: Dict[str, torch.LongTensor] = None,
                 target_tokens: Dict[str, torch.LongTensor] = None) -> Dict[str, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
@@ -212,13 +217,14 @@ class Seq2Seq(Model):
         -------
         Dict[str, torch.Tensor]
         """
+
         state = self._encode(source_tokens)
 
-        if target_tokens:
+        if intent_tokens and target_tokens:
             state = self._init_decoder_state(state)
             # The `_forward_loop` decodes the input sequence and computes the loss during training
             # and validation.
-            output_dict = self._forward_loop(state, target_tokens)
+            output_dict = self._forward_loop(state, intent_tokens, target_tokens)
         else:
             output_dict = {}
 
@@ -226,14 +232,20 @@ class Seq2Seq(Model):
             state = self._init_decoder_state(state)
             predictions = self._forward_beam_search(state)
             output_dict.update(predictions)
-            if target_tokens:
+            if intent_tokens and target_tokens:
                 # shape: (batch_size, beam_size, max_sequence_length)
                 top_k_predictions = output_dict["predictions"]
                 # shape: (batch_size, max_predicted_sequence_length)
                 best_predictions = top_k_predictions[:, 0, :]
-                predicted_tokens = self.decode(output_dict)["predicted_tokens"]
+                output_dict = self.decode(output_dict)
+                predicted_tokens = output_dict["predicted_tokens"]
+                predicted_intent = output_dict["predicted_intent_token"]
+
+                all_predicted_tokens = [predicted_intent + predicted_tokens[0]]
+                all_target_tokens = [x["intent_tokens"] + x["target_tokens"] for x in metadata]
                 for metric in self._token_based_metrics:
-                    metric(predicted_tokens, [x["target_tokens"] for x in metadata])
+                    metric(all_predicted_tokens, all_target_tokens)
+                    #metric(predicted_tokens, [x["target_tokens"] for x in metadata])
                 if self._bleu:
                     self._bleu(best_predictions, target_tokens["tokens"])
 
@@ -266,6 +278,13 @@ class Seq2Seq(Model):
                                 for x in indices]
             all_predicted_tokens.append(predicted_tokens)
         output_dict["predicted_tokens"] = all_predicted_tokens
+
+        predicted_intent_indices = output_dict["intent_prediction"]
+        if not isinstance(predicted_intent_indices, numpy.ndarray):
+            predicted_intent_indices = predicted_intent_indices.detach().cpu().numpy()
+        predicted_intent_token = self.vocab.get_token_from_index(predicted_intent_indices[0], namespace=self._intent_namespace)
+        output_dict["predicted_intent_token"] = [predicted_intent_token]
+
         return output_dict
 
     def _encode(self, source_tokens: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -297,6 +316,7 @@ class Seq2Seq(Model):
 
     def _forward_loop(self,
                       state: Dict[str, torch.Tensor],
+                      intent_tokens: Dict[str, torch.LongTensor] = None,
                       target_tokens: Dict[str, torch.LongTensor] = None) -> Dict[str, torch.Tensor]:
         """
         Make forward pass during training or do greedy search during prediction.
@@ -310,7 +330,9 @@ class Seq2Seq(Model):
 
         batch_size = source_mask.size()[0]
 
-        if target_tokens:
+        if intent_tokens and target_tokens:
+            target_intent = intent_tokens["intent_tokens"]
+
             # shape: (batch_size, max_target_sequence_length)
             targets = target_tokens["tokens"]
 
@@ -341,6 +363,9 @@ class Seq2Seq(Model):
                 # shape: (batch_size,)
                 input_choices = targets[:, timestep]
 
+            if timestep == 0:
+                intent_projections, state = self._prepare_output_projections(input_choices, state, True)
+
             # shape: (batch_size, num_classes)
             output_projections, state = self._prepare_output_projections(input_choices, state)
 
@@ -363,14 +388,14 @@ class Seq2Seq(Model):
 
         output_dict = {"predictions": predictions}
 
-        if target_tokens:
+        if target_tokens and intent_tokens:
             # shape: (batch_size, num_decoding_steps, num_classes)
             logits = torch.cat(step_logits, 1)
 
             # Compute loss.
             target_mask = util.get_text_field_mask(target_tokens)
             output_dict["target_mask"] = target_mask
-            loss = self._get_loss(logits, targets, target_mask)
+            loss = self._get_loss(logits, targets, target_mask, intent_projections, target_intent)
             output_dict["loss"] = loss
 
         return output_dict
@@ -380,6 +405,9 @@ class Seq2Seq(Model):
         batch_size = state["source_mask"].size()[0]
         start_predictions = state["source_mask"].new_full((batch_size,), fill_value=self._start_index)
 
+        intent_pobabilities, state = self._prepare_output_projections(start_predictions, state, True)
+        _, predicted_intent = torch.max(intent_pobabilities, 1)
+
         # shape (all_top_k_predictions): (batch_size, beam_size, num_decoding_steps)
         # shape (log_probabilities): (batch_size, beam_size)
         all_top_k_predictions, log_probabilities = self._beam_search.search(
@@ -388,12 +416,14 @@ class Seq2Seq(Model):
         output_dict = {
                 "class_log_probabilities": log_probabilities,
                 "predictions": all_top_k_predictions,
+                "intent_prediction": predicted_intent
         }
         return output_dict
 
     def _prepare_output_projections(self,
                                     last_predictions: torch.Tensor,
-                                    state: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:  # pylint: disable=line-too-long
+                                    state: Dict[str, torch.Tensor],
+                                    intent=False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:  # pylint: disable=line-too-long
         """
         Decode current state and last prediction to produce produce projections
         into the target space, which can then be used to get probabilities of
@@ -431,6 +461,10 @@ class Seq2Seq(Model):
                 decoder_input,
                 (decoder_hidden, decoder_context))
 
+        if intent:
+            output_projections = self._intent_out(decoder_hidden)
+            return output_projections, state
+
         state["decoder_hidden"] = decoder_hidden
         state["decoder_context"] = decoder_context
 
@@ -461,7 +495,9 @@ class Seq2Seq(Model):
     @staticmethod
     def _get_loss(logits: torch.LongTensor,
                   targets: torch.LongTensor,
-                  target_mask: torch.LongTensor) -> torch.Tensor:
+                  target_mask: torch.LongTensor,
+                  intent_score: torch.LongTensor,
+                  target_intent: torch.LongTensor) -> torch.Tensor:
         """
         Compute loss.
         Takes logits (unnormalized outputs from the decoder) of size (batch_size,
@@ -490,7 +526,12 @@ class Seq2Seq(Model):
         # shape: (batch_size, num_decoding_steps)
         relevant_mask = target_mask[:, 1:].contiguous()
 
-        return util.sequence_cross_entropy_with_logits(logits, relevant_targets, relevant_mask)
+        seq_loss = util.sequence_cross_entropy_with_logits(logits, relevant_targets, relevant_mask)
+
+        intent_loss = torch.nn.CrossEntropyLoss()(intent_score, target_intent.squeeze(-1))
+
+        return seq_loss + intent_loss
+        #return seq_loss
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:

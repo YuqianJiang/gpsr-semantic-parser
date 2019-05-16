@@ -102,7 +102,7 @@ $vbguide {name 1} from the {beacon 1} to the {beacon 2} = {guide} $vbguide {name
 meet {name 1} at the {beacon 1} and $guideto = {guide} O {name 1} O O FROM[{beacon 1}] O $guideto
 
 #$gdcmd    = $gobeacon, meet {name 1}, and $guideto
-$gobeacon, meet {name 1}, and $guideto = {guide} FROM[$gobeacon], O {name 1}, and $guideto
+$gobeacon, meet {name 1}, and $guideto = {guide} FROM[$gobeacon], O {name 1}, O $guideto
 
 #$gdcmd    = $vbguide {name 1} to the {beacon 2}, $gdwhere
 $vbguide {name 1} to the {beacon 2}, $gdwhere = {guide} $vbguide {name 1} O O FROM[{beacon 2}], $gdwhere

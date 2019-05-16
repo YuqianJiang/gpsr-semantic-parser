@@ -122,8 +122,8 @@ def save_slot_data(data, out_path):
     data = sorted(data, key=lambda x: len(x[0]))
     with open(out_path, "w") as f:
         for sentence, parse in data:
-            sentence_tokens = sentence.split(" ")
-            parse_tokens = parse.split(" ")
+            sentence_tokens = sentence.split()
+            parse_tokens = parse.split()
             width = max(len(x) for x in [*sentence_tokens, *parse_tokens])
             sentence_str = " ".ljust(width+1) + " ".join(token.ljust(width) for token in sentence_tokens)
             f.write(sentence_str + "\n")
@@ -132,9 +132,11 @@ def save_slot_data(data, out_path):
             #print(" ".join(token.ljust(width) for token in parse_tokens))
 
 
-def flatten(original):
+def flatten(original, cap=None):
     flattened = []
     for parse, utterances in original:
+        if cap:
+            utterances = utterances[:cap]
         for utterance in utterances:
             flattened.append((utterance, parse))
     return flattened

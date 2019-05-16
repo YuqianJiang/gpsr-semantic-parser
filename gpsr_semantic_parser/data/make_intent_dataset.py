@@ -38,11 +38,13 @@ def validate_args(args):
         train_cats = "".join([str(x) for x in args.train_categories])
         test_cats = "".join([str(x) for x in args.test_categories])
         args.name = "{}_{}".format(train_cats, test_cats)
+        args.name += "_" + str(args.pairs_cap)
 
     if args.use_parse_split:
         args.name += "_parse"
+
     if args.turk:
-        args.name += "_t"
+        args.name += "_turk"
 
 
 def load_turk_data(path, lambda_parser):
@@ -62,6 +64,9 @@ def load_turk_data(path, lambda_parser):
 
             source_sequence, target_sequence = line, next_line
 
+            if "***" in source_sequence or "***" in target_sequence:
+                continue
+
             try:
                 pairs[source_sequence] = tree_printer(lambda_parser.parse(target_sequence))
             except lark.exceptions.LarkError:
@@ -75,6 +80,7 @@ def main():
     parser.add_argument("-tc","--test-categories", default=[1, 2, 3], nargs='+', type=int)
     parser.add_argument("-p","--use-parse-split", action='store_true', default=False)
     parser.add_argument("-b","--branch-cap", default=None, type=int)
+    parser.add_argument("-c","--pairs-cap", default=20, type=int)
     parser.add_argument("-t","--turk", required=False, default=None, type=str)
     parser.add_argument("--name", default=None, type=str)
     parser.add_argument("--seed", default=0, required=False, type=int)
@@ -127,8 +133,9 @@ def main():
     pairs.append(cmd_gen.get_utterance_semantics_pairs(random_source, [3], args.branch_cap))
     #pairs = [cmd_gen.get_utterance_semantics_pairs(random_source, [cat], args.branch_cap) for cat in [1, 2, 3]]
 
-    #if args.turk and len(args.train_categories) == 3:
-    #    turk_pairs = load_turk_data(args.turk, cmd_gen.lambda_parser)
+    if args.turk:
+        turk_pairs = load_turk_data(args.turk, cmd_gen.lambda_parser)
+        pairs.append(turk_pairs)
     #    pairs[0] = merge_dicts(pairs[0], turk_pairs)
 
     by_utterance, by_parse = determine_unique_cat_data(pairs)
@@ -148,6 +155,9 @@ def main():
         # If we're training and testing on the same distributions, these should match exactly
         assert train_pairs == test_pairs
 
+    if not args.use_parse_split:
+    	train_pairs = train_pairs[:args.pairs_cap]
+
     different_test_dist = False
     if args.test_categories != args.train_categories:
         different_test_dist = True
@@ -165,9 +175,9 @@ def main():
     # Parse splits would have stored parse-(utterance list) pairs, so lets
     # flatten out those lists if we need to.
     if args.use_parse_split:
-        train = flatten(train)
-        val = flatten(val)
-        test = flatten(test)
+        train = flatten(train, args.pairs_cap)
+        val = flatten(val, args.pairs_cap)
+        test = flatten(test, args.pairs_cap)
 
     save_slot_data(train, train_out_path)
     save_slot_data(val, val_out_path)
