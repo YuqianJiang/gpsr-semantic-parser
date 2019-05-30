@@ -48,7 +48,7 @@ def validate_args(args):
 
 
 def load_turk_data(path, lambda_parser):
-    pairs = {}
+    pairs = []
     with open(path) as f:
         line_generator = more_itertools.peekable(enumerate(f))
         while line_generator:
@@ -68,7 +68,7 @@ def load_turk_data(path, lambda_parser):
                 continue
 
             try:
-                pairs[source_sequence] = tree_printer(lambda_parser.parse(target_sequence))
+                pairs.append((source_sequence, tree_printer(lambda_parser.parse(target_sequence))))
             except lark.exceptions.LarkError:
                 print("Skipping malformed parse: {}".format(target_sequence))
     return pairs
@@ -133,10 +133,9 @@ def main():
     pairs.append(cmd_gen.get_utterance_semantics_pairs(random_source, [3], args.branch_cap))
     #pairs = [cmd_gen.get_utterance_semantics_pairs(random_source, [cat], args.branch_cap) for cat in [1, 2, 3]]
 
-    if args.turk:
-        turk_pairs = load_turk_data(args.turk, cmd_gen.lambda_parser)
-        pairs.append(turk_pairs)
-    #    pairs[0] = merge_dicts(pairs[0], turk_pairs)
+    #if args.turk:
+    #    turk_pairs = load_turk_data(args.turk, cmd_gen.lambda_parser)
+    #    pairs.append(turk_pairs)
 
     by_utterance, by_parse = determine_unique_cat_data(pairs)
 
@@ -178,6 +177,15 @@ def main():
         train = flatten(train, args.pairs_cap)
         val = flatten(val, args.pairs_cap)
         test = flatten(test, args.pairs_cap)
+
+    if args.turk:
+        turk_pairs = load_turk_data(args.turk, cmd_gen.lambda_parser)
+        split1 = int(0.3 * len(turk_pairs))
+        split2 = int(0.4 * len(turk_pairs))
+        train = train + turk_pairs[:split1]
+        val = val + turk_pairs[split1:split2]
+        test = test + turk_pairs[split2:]
+    #    pairs[0] = merge_dicts(pairs[0], turk_pairs)
 
     save_slot_data(train, train_out_path)
     save_slot_data(val, val_out_path)
